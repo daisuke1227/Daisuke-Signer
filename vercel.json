@@ -1,6 +1,6 @@
-
 {
   "rewrites": [
+    { "source": "/docs", "destination": "/docs.html" },
     { "source": "/(.*)", "destination": "/" }
   ],
   "cleanUrls": true,
