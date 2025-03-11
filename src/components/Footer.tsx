@@ -16,7 +16,7 @@ export const Footer = () => {
             
             <div className="flex flex-col md:flex-row justify-center items-center gap-4 md:gap-8">
               <a 
-                href="https://discord.gg/BRjSCXNzan" 
+                href="https://discord.gg/ipasign" 
                 target="_blank" 
                 rel="noopener noreferrer"
                 className="flex items-center justify-center gap-3 w-full md:w-64 py-4 px-6 rounded-xl bg-[#5865F2]/10 hover:bg-[#5865F2]/20 border border-[#5865F2]/20 hover:border-[#5865F2]/40 transition-all duration-300 group"
