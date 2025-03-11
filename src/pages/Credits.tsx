@@ -102,7 +102,7 @@ const Credits = () => {
           
           <div className="text-center pt-8">
             <p className="text-muted-foreground">
-              Want to contribute? Join our <a href="https://discord.gg/BRjSCXNzan" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Discord server</a>.
+              Want to contribute? Join our <a href="https://discord.gg/ipasign" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Discord server</a>.
             </p>
           </div>
         </div>
