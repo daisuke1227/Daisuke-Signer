@@ -1,15 +1,18 @@
+#!/usr/bin/env node
 require("dotenv").config();
 const express = require("express");
 const multer = require("multer");
 const fs = require("fs");
 const fsp = fs.promises;
 const path = require("path");
-const { spawn } = require("child_process");
+const os = require("os");
+const { spawn, spawnSync } = require("child_process");
 const unzipper = require("unzipper");
 const plist = require("plist");
 const bplistParser = require("bplist-parser");
 const cookieParser = require("cookie-parser");
 const crypto = require("crypto");
+
 const app = express();
 
 app.use(express.urlencoded({ extended: true }));
@@ -33,7 +36,8 @@ if (!fs.existsSync(DEFAULT_IPA_PATH)) {
   process.exit(1);
 }
 
-const dirs = ["p12", "mp", "temp", "signed", "plist", "users"];
+// Create required directories (including permplist)
+const dirs = ["p12", "mp", "temp", "signed", "plist", "users", "permplist"];
 for (const d of dirs) {
   const dirPath = path.join(WORK_DIR, d);
   if (!fs.existsSync(dirPath)) {
@@ -45,7 +49,24 @@ for (const d of dirs) {
 app.use(express.static(path.join(__dirname, "dist")));
 app.use("/signed", express.static(path.join(WORK_DIR, "signed")));
 app.use("/plist", express.static(path.join(WORK_DIR, "plist")));
+app.use("/permplist", express.static(path.join(WORK_DIR, "permplist")));
 app.use("/icons", express.static(path.join(WORK_DIR, "icons")));
+
+// Global in-memory store for short URLs.
+const shortUrls = {};
+
+// The /s endpoint. When a short code is provided, look up the original manifest URL
+// and redirect the client to an itms-services URL.
+app.get('/s/:code', (req, res) => {
+  const { code } = req.params;
+  const manifestUrl = shortUrls[code];
+  if (manifestUrl) {
+    // Construct the itms-services link and redirect the user.
+    const itmsLink = `itms-services://?action=download-manifest&url=${manifestUrl}`;
+    return res.redirect(itmsLink);
+  }
+  return res.status(404).send("Not Found");
+});
 
 const upload = multer({
   dest: path.join(WORK_DIR, "temp"),
@@ -87,8 +108,7 @@ async function deleteOldFiles(directory, maxAgeInMs) {
       const filePath = path.join(directory, file);
       try {
         const stats = await fsp.stat(filePath);
-        const fileAge = now - stats.mtimeMs;
-        if (fileAge > maxAgeInMs) {
+        if (now - stats.mtimeMs > maxAgeInMs) {
           await fsp.unlink(filePath);
           console.log(`Deleted file: ${filePath}`);
         }
@@ -101,9 +121,7 @@ async function deleteOldFiles(directory, maxAgeInMs) {
   }
 }
 
-const directoriesToClean = ["mp", "p12", "plist", "temp", "signed"].map((dir) =>
-  path.join(WORK_DIR, dir)
-);
+const directoriesToClean = ["mp", "p12", "plist", "temp", "signed"].map(dir => path.join(WORK_DIR, dir));
 const CLEANUP_INTERVAL_MS = 30 * 60 * 1000;
 const MAX_FILE_AGE_MS = 30 * 60 * 1000;
 async function performCleanup() {
@@ -121,18 +139,16 @@ function spawnPromise(cmd, args, options = {}) {
     const child = spawn(cmd, args, options);
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (data) => {
+    child.stdout.on("data", data => {
       stdout += data.toString();
       console.log(`stdout: ${data}`);
     });
-    child.stderr.on("data", (data) => {
+    child.stderr.on("data", data => {
       stderr += data.toString();
       console.error(`stderr: ${data}`);
     });
-    child.on("error", (error) => {
-      reject(error);
-    });
-    child.on("close", (code) => {
+    child.on("error", error => reject(error));
+    child.on("close", code => {
       if (code !== 0) {
         reject(new Error(`Command failed with exit code ${code}: ${stderr}`));
       } else {
@@ -253,9 +269,91 @@ app.use(async (req, res, next) => {
   next();
 });
 
-// Helper function to shell escape arguments that might contain spaces or special characters.
+// Helper to shell-escape arguments.
 function shellEscape(arg) {
   return `'${arg.replace(/'/g, "'\\''")}'`;
+}
+
+async function quickInjectDylibs(ipaPath, dylibPaths) {
+  const pyScript = `#!/usr/bin/env python3
+import os
+import atexit
+import zipfile
+import argparse
+from plistlib import load as pload
+from subprocess import run, DEVNULL
+from tempfile import NamedTemporaryFile as NTF
+
+import lief
+
+parser = argparse.ArgumentParser(description="quin: quickly inject dylibs into an IPA without unzipping.")
+parser.add_argument("-i", metavar="ipa", type=str, required=True,
+                    help="the ipa to inject into")
+parser.add_argument("-f", metavar="dylib", type=str, nargs="+", required=True,
+                    help="the dylibs to inject")
+args = parser.parse_args()
+
+if not (IPA := os.path.realpath(args.i)).endswith(".ipa"):
+    parser.error("input must be an ipa file")
+elif not os.path.isfile(IPA):
+    parser.error(f"'{IPA}' does not exist")
+elif not zipfile.is_zipfile(IPA):
+    parser.error(f"'{IPA}' is an invalid zipfile/ipa")
+
+for dylib in (DYLIBS := {os.path.realpath(d) for d in args.f}):
+    if not dylib.endswith(".dylib"):
+        parser.error(f"'{dylib}' is not a dylib")
+    elif not os.path.isfile(dylib):
+        parser.error(f"'{dylib}' does not exist")
+
+@atexit.register
+def del_tmp():
+    try:
+        os.remove(temp_macho)
+    except NameError:
+        pass
+
+with zipfile.ZipFile(IPA, "a") as zf:
+    for name in (nl := zf.namelist()):
+        if len((spl := name.split("/"))) > 1 and spl[1].endswith(".app"):
+            APP = spl[1]
+            del spl
+            break
+    else:
+        parser.error(f"couldn't find app in '{IPA}'")
+    with zf.open(f"Payload/{APP}/Info.plist") as pl:
+        EXEC_IPATH = f"Payload/{APP}/{pload(pl)['CFBundleExecutable']}"
+    if f"Payload/{APP}/Frameworks/" not in nl:
+        zf.mkdir(f"Payload/{APP}/Frameworks")
+    for dylib in DYLIBS:
+        zf.write(dylib, f"Payload/{APP}/Frameworks/{os.path.basename(dylib)}")
+    with NTF(delete=False) as tmp:
+        tmp.write(zf.read(EXEC_IPATH))
+        lief.logging.disable()
+        executable = lief.parse((temp_macho := tmp.name))
+        for dylib in DYLIBS:
+            executable.add(lief.MachO.DylibCommand.weak_lib(f"@rpath/{os.path.basename(dylib)}"))
+        executable.write(temp_macho)
+run(["zip", "-d", IPA, EXEC_IPATH], stdout=DEVNULL)
+with zipfile.ZipFile(IPA, "a") as zf:
+    zf.write(temp_macho, EXEC_IPATH)
+print("[*] done!")
+`;
+
+  const tmpPyPath = path.join(os.tmpdir(), `quick_inject_${generateRandomSuffix()}.py`);
+  fs.writeFileSync(tmpPyPath, pyScript, { mode: 0o755 });
+  console.log(`Wrote temporary injection script to ${tmpPyPath}`);
+
+  const args = ["-i", ipaPath, "-f", ...dylibPaths];
+  console.log(`Running python3 ${tmpPyPath} ${args.join(" ")}`);
+  const result = spawnSync("python3", [tmpPyPath, ...args], { stdio: "inherit" });
+  if (result.status !== 0) {
+    fs.unlinkSync(tmpPyPath);
+    throw new Error("Python dylib injection failed.");
+  }
+  fs.unlinkSync(tmpPyPath);
+  console.log("[*] Dylib injection completed via Python script.");
+  return;
 }
 
 async function runCyanIfNeeded(inputIpa, outputIpa, req) {
@@ -272,13 +370,11 @@ async function runCyanIfNeeded(inputIpa, outputIpa, req) {
   if (req.body.cyan_minimum && req.body.cyan_minimum.trim() !== "") {
     cyanArgs.push("-m", req.body.cyan_minimum.trim());
   }
-  // If a cyan icon was uploaded, move it and add to the arguments.
   if (req.files["cyan_icon"] && req.files["cyan_icon"].length > 0) {
     const iconFile = req.files["cyan_icon"][0];
     const movedIconPath = path.join(WORK_DIR, "temp", iconFile.originalname);
     await fsp.rename(iconFile.path, movedIconPath);
     cyanArgs.push("-k", movedIconPath);
-    // Save the moved icon path on the request for later use in manifest generation.
     req.cyanIconPath = movedIconPath;
   }
   if (req.files["cyan_tweaks"] && req.files["cyan_tweaks"].length > 0) {
@@ -312,7 +408,6 @@ async function runCyanIfNeeded(inputIpa, outputIpa, req) {
     cyanArgs.push("--ignore-encrypted");
   }
   
-  // Escape each argument to handle spaces and special characters.
   const escapedArgs = cyanArgs.map(shellEscape).join(" ");
   const cyanCommand = `yes | cyan ${escapedArgs}`;
   console.log(`Running cyan: ${cyanCommand}`);
@@ -441,7 +536,7 @@ app.post(
       // Run cyan modifications on the IPA (if any advanced options were passed)
       const cyanOutputIpaPath = path.join(WORK_DIR, "temp", `cyan_${uniqueSuffix || generateRandomSuffix()}.ipa`);
       let finalIpaForSigning = await runCyanIfNeeded(outputIpaPath, cyanOutputIpaPath, req);
-      // (Optional) Remove dylibs if requested
+      // Optional dylib removal
       if (req.body.remove_dylibs) {
         try {
           const dylibsToRemove = JSON.parse(req.body.remove_dylibs);
@@ -481,6 +576,18 @@ app.post(
           return res.status(500).json({ success: false, error: "Failed to remove dylibs: " + err.message });
         }
       }
+      // If injection is requested, use our quickInjectDylibs (which spawns the Python script)
+      if (req.body.inject_dylibs) {
+        try {
+          await quickInjectDylibs(finalIpaForSigning, [
+            "/home/dai1228/signer/ExtensionFix.dylib",
+            "/home/dai1228/signer/PluginsInject.dylib"
+          ]);
+        } catch (err) {
+          console.error("Error during dylib injection:", err);
+          return res.status(500).json({ success: false, error: "Failed to inject dylibs: " + err.message });
+        }
+      }
       // Execute zsign to create the signed IPA.
       signedIpaPath = path.join(WORK_DIR, "signed", `signed_${uniqueSuffix || generateRandomSuffix()}.ipa`);
       const zsignArgs = ["-z", "5", "-k", p12Path];
@@ -492,7 +599,7 @@ app.post(
       await spawnPromise("zsign", zsignArgs);
       console.log(`Signed IPA created at: ${signedIpaPath}`);
 
-      // ***** Extract Info.plist from the signed IPA *****
+      // Extract Info.plist from signed IPA.
       let bundleId = "com.example.unknown";
       let bundleVersion = "1.0.0";
       let displayName = "App";
@@ -503,7 +610,7 @@ app.post(
           throw new Error("Signed IPA file not found for Info.plist extraction.");
         }
         const directory = await unzipper.Open.file(signedIpaPath);
-        const infoPlistEntry = directory.files.find((f) => f.path.match(/^Payload\/.*\.app\/Info\.plist$/));
+        const infoPlistEntry = directory.files.find(f => f.path.match(/^Payload\/.*\.app\/Info\.plist$/));
         if (!infoPlistEntry) {
           throw new Error("Couldn't find Info.plist in the signed IPA.");
         }
@@ -530,8 +637,7 @@ app.post(
         return res.status(500).json({ success: false, error: "Failed to extract Info.plist from the signed IPA." });
       }
 
-      // ***** Handle the app icon for manifest *****
-      // If a cyan icon was uploaded (i.e. -k was present), use that image for the manifest.
+      // Handle app icon for manifest.
       if (req.cyanIconPath && fs.existsSync(req.cyanIconPath)) {
         try {
           const iconsDir = path.join(WORK_DIR, "icons");
@@ -547,11 +653,10 @@ app.post(
           console.error("Error processing uploaded cyan icon:", err);
         }
       }
-      // If no cyan icon was uploaded or an error occurred, extract the icon from the IPA.
       if (!extractedIconUrl) {
         try {
           const directory = await unzipper.Open.file(signedIpaPath);
-          const infoPlistEntry = directory.files.find((f) => f.path.match(/^Payload\/.*\.app\/Info\.plist$/));
+          const infoPlistEntry = directory.files.find(f => f.path.match(/^Payload\/.*\.app\/Info\.plist$/));
           if (!infoPlistEntry) {
             throw new Error("Couldn't find Info.plist in the signed IPA for icon extraction.");
           }
@@ -585,7 +690,7 @@ app.post(
         }
       }
 
-      // ***** Handle signed IPA upload (Storj optional) *****
+      // Handle signed IPA upload (Storj optional).
       let ipaUrlForManifest = "";
       if (req.body.use_storj) {
         const bucketName = "my-bucket"; // adjust if needed
@@ -598,23 +703,27 @@ app.post(
         permUrl = permUrl.replace("/s/", "/raw/");
         console.log("Permanent URL:", permUrl);
         ipaUrlForManifest = permUrl;
-        // Delete local IPA after successful Storj upload.
         await fsp.rm(signedIpaPath, { force: true });
         console.log("Local signed IPA file deleted after uploading for permanent link.");
       } else {
-        // Use the server URL to serve the signed IPA.
         ipaUrlForManifest = new URL(`signed/${path.basename(signedIpaPath)}`, UPLOAD_URL).toString();
         console.log("Using server URL for signed IPA:", ipaUrlForManifest);
       }
 
-      // ***** Generate manifest plist using the IPA URL *****
-      const manifestPlist = generateManifestPlist(ipaUrlForManifest, bundleId, bundleVersion, displayName, extractedIconUrl);
+      // Generate manifest plist.
+      const plistDir = (req.body.use_storj || (req.body.ipa_direct_link && req.body.ipa_direct_link.trim() !== "")) ? "permplist" : "plist";
       const plistFilename = sanitizeFilename(displayName) + "_" + (uniqueSuffix || generateRandomSuffix()) + ".plist";
-      const plistPath = path.join(WORK_DIR, "plist", plistFilename);
+      const plistPath = path.join(WORK_DIR, plistDir, plistFilename);
+      const manifestPlist = generateManifestPlist(ipaUrlForManifest, bundleId, bundleVersion, displayName, extractedIconUrl);
       await fsp.writeFile(plistPath, manifestPlist, "utf8");
       console.log(`Generated manifest plist at: ${plistPath}`);
-      const manifestUrl = new URL(`plist/${plistFilename}`, UPLOAD_URL).toString();
-      const installLink = `itms-services://?action=download-manifest&url=${manifestUrl}`;
+      const manifestUrl = new URL(`${plistDir}/${plistFilename}`, UPLOAD_URL).toString();
+
+      // Generate a short code, store it, and construct the short URL install link.
+      const shortCode = generateRandomSuffix();
+      shortUrls[shortCode] = manifestUrl;
+      const shortManifestUrl = new URL(`s/${shortCode}`, UPLOAD_URL).toString();
+      const installLink = `${shortManifestUrl}`;
       console.log(`Install link: ${installLink}`);
       res.json({
         success: true,
@@ -659,7 +768,7 @@ app.use(multerErrorHandler);
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "dist", "index.html"));
 });
-const port = 3010;
+const port = 3000;
 app.listen(port, () => {
   console.log(`Server running on port ${port}. Open http://localhost:${port}/`);
 });

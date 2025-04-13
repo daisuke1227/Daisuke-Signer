@@ -1,10 +1,29 @@
 import { useState, useEffect, useRef } from "react";
 import { Helmet } from "react-helmet";
 import { useNavigate } from "react-router-dom";
-import { Upload, ChevronDown, Settings, Eye, EyeOff, Menu, X, Copy, Download, CheckCircle2, Loader2, Info } from "lucide-react";
+import {
+  Upload,
+  ChevronDown,
+  Settings,
+  Eye,
+  EyeOff,
+  Menu,
+  X,
+  Copy,
+  Download,
+  CheckCircle2,
+  Loader2,
+  Info,
+} from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Tooltip,
   TooltipContent,
@@ -45,8 +64,9 @@ const Index = () => {
     ignoreEncryption: false,
     compressionLevel: "6",
     dylibs: [] as { name: string; selected: boolean }[],
+    injectDylibs: false, // <-- New property for dylib injection
   });
-  const [resultData, setResultData] = useState(null);
+  const [resultData, setResultData] = useState<any>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [signingProgress, setSigningProgress] = useState(0);
   const [errorMessage, setErrorMessage] = useState("");
@@ -56,11 +76,20 @@ const Index = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const storageOptions = [
-    { id: "none", name: "No permanent link", description: "Standard signing without permanent storage" },
-    { id: "storj", name: "Use perm direct link", description: "Be able to have a direct link forever and install your IPA files" },
+    {
+      id: "none",
+      name: "No permanent link",
+      description: "Standard signing without permanent storage",
+    },
+    {
+      id: "storj",
+      name: "Use perm direct link",
+      description:
+        "Be able to have a direct link forever and install your IPA files",
+    },
   ];
 
-  const handleToggleDylib = (index: number) => {
+  const handleToggleDylibs = (index: number) => {
     setAdvancedSettings((prev) => {
       const newDylibs = prev.dylibs.map((item, idx) =>
         idx === index ? { ...item, selected: !item.selected } : item
@@ -78,14 +107,23 @@ const Index = () => {
         fetch(config.provisionFile).then((r) => r.blob()),
       ])
         .then(([p12Blob, provisionBlob]) => {
-          const p12File = new File([p12Blob], "certificate.p12", { type: "application/x-pkcs12" });
-          const provisionFile = new File([provisionBlob], "profile.mobileprovision", { type: "application/octet-stream" });
+          const p12File = new File([p12Blob], "certificate.p12", {
+            type: "application/x-pkcs12",
+          });
+          const provisionFile = new File(
+            [provisionBlob],
+            "profile.mobileprovision",
+            { type: "application/octet-stream" }
+          );
           setFiles((prev) => ({
             ...prev,
             p12: p12File,
             mobileprovision: provisionFile,
           }));
-          setFileNames({ p12: "certificate.p12", mobileprovision: "profile.mobileprovision" });
+          setFileNames({
+            p12: "certificate.p12",
+            mobileprovision: "profile.mobileprovision",
+          });
           setPassword(config.password);
           sessionStorage.removeItem("selectedConfig");
         })
@@ -96,7 +134,9 @@ const Index = () => {
   }, []);
 
   const isAllFieldsFilled =
-    ((files.ipa) || directIpaLink.trim() !== "") && files.p12 && files.mobileprovision;
+    ((files.ipa) || directIpaLink.trim() !== "") &&
+    files.p12 &&
+    files.mobileprovision;
 
   const handleFileChange = (
     e: React.ChangeEvent<HTMLInputElement>,
@@ -174,7 +214,7 @@ const Index = () => {
     if (files.p12) formData.append("p12", files.p12);
     if (files.mobileprovision) formData.append("mobileprovision", files.mobileprovision);
     formData.append("p12_password", password);
-    
+
     if (storageOption !== "none") {
       formData.append("use_storj", storageOption);
     }
@@ -212,6 +252,8 @@ const Index = () => {
           formData.append("remove_dylibs", JSON.stringify(selectedDylibs));
         }
       }
+      // Include the inject dylibs flag if enabled.
+      if (advancedSettings.injectDylibs) formData.append("inject_dylibs", "on");
     }
     
     const xhr = new XMLHttpRequest();
@@ -339,6 +381,13 @@ const Index = () => {
                     <Button variant="default" size="lg" className="w-full sm:w-auto gap-2 rounded-full">
                       <Download className="w-5 h-5" />
                       Install App
+                    </Button>
+                  </a>
+                  {/* New Download IPA button */}
+                  <a href={resultData.signedIpaUrl} download target="_blank" rel="noopener noreferrer" className="w-full sm:w-auto">
+                    <Button variant="secondary" size="lg" className="w-full sm:w-auto gap-2 rounded-full">
+                      <Download className="w-5 h-5" />
+                      Download IPA
                     </Button>
                   </a>
                   
@@ -747,7 +796,7 @@ const Index = () => {
                               className={`w-full justify-start rounded-xl transition-all duration-200 hover:bg-accent/50 ${
                                 d.selected ? "border-primary/50 bg-primary/5" : ""
                               }`}
-                              onClick={() => handleToggleDylib(index)}
+                              onClick={() => handleToggleDylibs(index)}
                             >
                               {d.name}
                             </Button>
@@ -876,16 +925,36 @@ const Index = () => {
                         >
                           Ignore encryption check
                         </Button>
+                        {/* New toggle for dylib injection */}
+                        <Button
+                          variant="outline"
+                          className={`justify-start rounded-xl transition-all duration-200 hover:bg-accent/50 ${
+                            advancedSettings.injectDylibs ? "border-primary/50 bg-primary/5" : ""
+                          }`}
+                          onClick={() =>
+                            setAdvancedSettings((prev) => ({
+                              ...prev,
+                              injectDylibs: !prev.injectDylibs,
+                            }))
+                          }
+                        >
+                          Fix Black screen
+                        </Button>
                       </div>
                     </div>
                   </div>
                 </div>
               )}
             </div>
-          </div>
-          
-          <div className="text-center text-sm text-muted-foreground">
-            <p>Need help? <a href="/docs.html" target="_blank" className="text-foreground hover:underline">Read our documentation</a></p>
+            
+            <div className="text-center text-sm text-muted-foreground">
+              <p>
+                Need help?{" "}
+                <a href="/docs.html" target="_blank" className="text-foreground hover:underline">
+                  Read our documentation
+                </a>
+              </p>
+            </div>
           </div>
         </div>
       </main>

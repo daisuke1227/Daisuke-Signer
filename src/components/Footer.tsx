@@ -29,7 +29,7 @@ export const Footer = () => {
               </a>
               
               <a 
-                href="https://youtube.com/@dai1228" 
+                href="https://youtube.com/@dai1228." 
                 target="_blank" 
                 rel="noopener noreferrer"
                 className="flex items-center justify-center gap-3 w-full md:w-64 py-4 px-6 rounded-xl bg-[#FF0000]/10 hover:bg-[#FF0000]/20 border border-[#FF0000]/20 hover:border-[#FF0000]/40 transition-all duration-300 group"
