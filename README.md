@@ -1,5 +1,5 @@
 # Daisuke-Signer
-Daisuke Signer is an experimental iPA signer and front end made using [zsign](https://github.com/zhlynn/zsign), a CJS wrapper, and Vite for a frontend. The signer
+Daisuke Signer is an experimental iPA signer and website made using [zsign](https://github.com/zhlynn/zsign), a CJS wrapper, and Vite for a frontend. The signer
 includes easy ways to sign any iPA file using custom certificates and the ability to modify
 the iPA however you want using [cyan](https://github.com/asdfzxcvbn/pyzule-rw)
 
