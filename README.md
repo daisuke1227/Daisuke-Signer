@@ -17,10 +17,8 @@ npm install
 ```
 3. In the .env file replace these values for your environment
 ```env
-UPLOAD_URL=https://ipasign.pro/
-WORK_DIR=/home/dai1228/signer/uploads
-PORT=3000
-DEFAULT_IPA_PATH=/home/dai1228/Portal-1.9.0.ipa
+UPLOAD_URL=https://changeme.com
+WORK_DIR=/path/to/uploads
 ENCRYPTION_KEY=f526826e8d522a909d18566e840a591ef8b922dea6502bcbf5348a42ddd75091
 ```
 
